@@ -1,0 +1,248 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>How Does a Hypercar Brake From 400 km/h?</title>
+<style>
+body{margin:0;background:#07080a;color:#e8ecf2;font:13px system-ui;display:flex;flex-wrap:wrap;height:100vh}
+#stage{flex:1 1 300px;display:flex;justify-content:center;align-items:center;min-width:0;height:100vh}
+canvas#out{height:100%;max-width:100%;aspect-ratio:9/16;background:#000}
+#ui{flex:0 0 330px;padding:12px;overflow:auto;box-sizing:border-box;max-height:100vh}
+button,select{background:#1b2230;color:#e8ecf2;border:1px solid #384358;border-radius:6px;padding:6px 9px;margin:2px;cursor:pointer}
+button.on{background:#2f6fed}button:disabled{opacity:.4}
+#scn button{width:30px}input[type=range]{width:100%}label{display:block;margin:3px 0}
+#exp{background:#c4161c;font-weight:700;width:100%;padding:10px}#msg{font-size:12px;color:#9fb0c8;min-height:40px}
+progress{width:100%}#load{position:fixed;inset:0;background:#07080a;display:flex;align-items:center;justify-content:center;font-size:16px;z-index:9;text-align:center;padding:20px}
+@media(max-width:700px){body{height:auto}#stage{height:80vh;flex-basis:100%}#ui{flex-basis:100%}}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/","mediabunny":"https://cdn.jsdelivr.net/npm/mediabunny@1.11.2/dist/bundles/mediabunny.min.mjs"}}</script>
+</head><body>
+<div id="load">Loading Chiron, road, HDRI and engine audio…</div>
+<div id="stage"><canvas id="out" width="540" height="960"></canvas></div>
+<div id="ui">
+<b>How Does a Hypercar Brake From 400 km/h?</b>
+<div><button id="play">▶ Play</button><button id="restart">⟲ Restart</button><button id="rcam">Reset camera</button><button id="insp">Inspect</button></div>
+<input id="scrub" type="range" min="0" max="78" step="0.01" value="0"><div><span id="tm">0.0</span> / 78.0 s</div>
+<div id="scn"></div>
+<label><input type="checkbox" id="tAir" checked> Airflow</label><label><input type="checkbox" id="tVec" checked> Force vectors</label><label><input type="checkbox" id="tCut" checked> Brake cutaway</label>
+<label><input type="checkbox" id="tSnd" checked> Sound</label><label>Volume <input id="vol" type="range" min="0" max="1" step="0.01" value="0.8"></label>
+<label>Preview quality <select id="q"><option value="540">540×960</option><option value="720">720×1280</option></select></label>
+<hr><label>Export size <select id="esz"><option value="1080">1080 × 1920 (Full HD)</option><option value="720">720 × 1280</option></select></label>
+<button id="exp">EXPORT FULL HD MP4 — 1080 × 1920</button><button id="cancel" disabled>Cancel</button>
+<progress id="pr" value="0" max="1"></progress><div id="msg"></div>
+<div style="font-size:11px;color:#7d8aa0">Engine audio: your supplied recording (edited/looped, gain-shaped). Wind, actuator and brake sounds are synthetic accents. Braking timeline is illustrative slow motion.</div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {MeshoptDecoder} from 'three/addons/libs/meshopt_decoder.module.js';
+import {RGBELoader} from 'three/addons/loaders/RGBELoader.js';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+const $=id=>document.getElementById(id), DUR=78, FPS=30, V0=400/3.6, DIST=491, TB=8;
+const SC=[0,7,15,23,31,39,46,54,62,70,78];
+const NAR=["At 400 kilometers per hour, your car is covering more than 110 meters every second. So how do you make a machine moving that fast actually stop?","First, the brakes aren't the only thing helping. The Chiron's rear wing can rise into an airbrake, turning the airflow into resistance.","That raised wing creates much more drag, pushing against the car as it moves forward. But air resistance alone can't do the entire job.","That's where the carbon-ceramic brakes come in. Inside each wheel, a caliper squeezes brake pads against a spinning disc.","The friction slows the discs, the wheels, and ultimately the car. But the energy doesn't just disappear. Much of it becomes heat.","At these speeds, the brakes have to manage enormous energy, while the tyres still need enough grip to transfer the braking force to the road.","Meanwhile, the rear wing changes the aerodynamic forces on the car. It's doing more than making the car look aggressive—it's helping it decelerate and remain controlled.","Bugatti publishes a 400-to-zero braking distance of 491 meters for the Chiron Super Sport. That's almost half a kilometer of road.","And the full zero-to-400-to-zero run takes 41.96 seconds in the published specifications. That includes accelerating all the way up to 400 before braking back down.","So stopping a hypercar isn't one trick. It's the airbrake, the wheel brakes, the tyres, and the car's control systems working together against an enormous amount of speed."];
+const out=$('out'),g=out.getContext('2d');
+const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1;
+const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(38,9/16,.1,3000);
+const sun=new THREE.DirectionalLight(0xfff2e0,2.2);sun.position.set(-20,30,-15);scene.add(sun);
+const ease=x=>x*x*(3-2*x),cl=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)),lerp=(a,b,t)=>a+(b-a)*t;
+// ---------- load
+const gl=new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+const L=u=>new Promise((r,j)=>gl.load(u,r,undefined,j));
+let car,carRoot,road,roadL,roadAxisRot=0,groundY=0,engBuf=null,actx=null;
+const P={}; // parts
+const [cg,rg,hdr,mp3]=await Promise.all([L('assets/chiron.glb'),L('assets/road.glb'),new RGBELoader().loadAsync('assets/sky.hdr'),fetch('assets/engine.mp3').then(r=>r.arrayBuffer())]).catch(e=>{$('load').textContent='Asset load failed: '+e+' (serve via http, see README)';throw e});
+hdr.mapping=THREE.EquirectangularReflectionMapping;const pm=new THREE.PMREMGenerator(renderer);scene.environment=pm.fromEquirectangular(hdr).texture;scene.background=scene.environment;
+try{actx=new AudioContext();engBuf=await actx.decodeAudioData(mp3.slice(0));}catch(e){$('msg').textContent='ENGINE AUDIO DECODE FAILED: '+e}
+// ---------- car: orient forward=+X, scale 4.54 m, ground y=0
+car=cg.scene;const W={};car.traverse(o=>{if(/^Wheel_01_/.test(o.name))W[o.name.slice(9,11)]=o;if(/^Caliper/.test(o.name))P['cal'+o.name.slice(7,9)]=o;});
+const wc=n=>new THREE.Box3().setFromObject(W[n]).getCenter(new THREE.Vector3());
+const fwd=wc('LF').add(wc('RF')).sub(wc('LR')).sub(wc('RR'));
+carRoot=new THREE.Group();carRoot.add(car);scene.add(carRoot);
+const ang=Math.abs(fwd.x)>Math.abs(fwd.z)?(fwd.x>0?0:Math.PI):(fwd.z>0?Math.PI/2:-Math.PI/2); // rotateY so fwd->+X
+car.rotation.y=ang;carRoot.updateMatrixWorld(true);
+let bb=new THREE.Box3().setFromObject(car);const sc=4.54/(bb.max.x-bb.min.x);car.scale.setScalar(sc);carRoot.updateMatrixWorld(true);
+bb=new THREE.Box3().setFromObject(car);car.position.set(-(bb.min.x+bb.max.x)/2,-bb.min.y,-(bb.min.z+bb.max.z)/2);carRoot.updateMatrixWorld(true);
+const inv=()=>carRoot.matrixWorld.clone().invert();
+const cen=o=>new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3());
+// wheel pivots (axle = Z)
+P.piv={};let wr=.36;
+for(const k of ['LF','RF','LR','RR']){const b=new THREE.Box3().setFromObject(W[k]),c=b.getCenter(new THREE.Vector3());wr=(b.max.y-b.min.y)/2;
+ const pv=new THREE.Group();pv.position.copy(c);carRoot.add(pv);pv.updateMatrixWorld(true);pv.attach(W[k]);P.piv[k]=pv;}
+const Wc=P.piv.LF.position.clone();
+// rear wing: all Spoiler_* parts, pivot at front-bottom edge of group bbox
+const wing=new THREE.Group();const sp=[];car.traverse(o=>{if(/^Spoiler_/.test(o.name)&&!o.name.startsWith('Object'))sp.push(o)});
+const wb=new THREE.Box3();sp.forEach(o=>wb.expandByObject(o));
+wing.position.set(wb.min.x,wb.min.y,(wb.min.z+wb.max.z)/2);carRoot.add(wing);wing.updateMatrixWorld(true);sp.forEach(o=>wing.attach(o));
+const wingC=wb.getCenter(new THREE.Vector3());
+// brake cutaway (explanatory geometry, labelled in overlay): disc rotates with wheel; pads+caliper stay fixed
+const discM=new THREE.MeshStandardMaterial({color:0x2a2c30,metalness:.6,roughness:.45});
+const disc=new THREE.Group();const dr=wr*.58;
+const dm=new THREE.Mesh(new THREE.CylinderGeometry(dr,dr,.034,48),discM);dm.rotation.x=Math.PI/2;disc.add(dm);
+for(let i=0;i<16;i++){const m=new THREE.Mesh(new THREE.BoxGeometry(.012,dr*.45,.036),new THREE.MeshStandardMaterial({color:0x08090a}));const a=i/16*6.283;m.position.set(Math.cos(a)*dr*.6,Math.sin(a)*dr*.6,0);m.rotation.z=a-Math.PI/2;disc.add(m);}
+const hub=new THREE.Mesh(new THREE.CylinderGeometry(dr*.35,dr*.35,.05,24),new THREE.MeshStandardMaterial({color:0x555a60,metalness:.8,roughness:.4}));hub.rotation.x=Math.PI/2;disc.add(hub);
+P.piv.LF.add(disc);
+const cc=P.calLF?cen(P.calLF).applyMatrix4(inv()).sub(Wc):new THREE.Vector3(0,1,0);const phi=Math.atan2(cc.y,cc.x);
+const padM=new THREE.MeshStandardMaterial({color:0xb7791f,roughness:.7,emissive:0x331100});const pads=[1,-1].map(()=>{const m=new THREE.Mesh(new THREE.BoxGeometry(.09,.05,.014),padM);m.position.copy(Wc).add(new THREE.Vector3(Math.cos(phi)*dr*.8,Math.sin(phi)*dr*.8,0));m.rotation.z=phi-Math.PI/2;carRoot.add(m);return m});
+const cut=[disc,...pads];
+const lfMats=[];W.LF.traverse(o=>{if(o.isMesh){o.material=o.material.clone();lfMats.push(o.material)}});
+// ---------- road: along X, ~12 m wide carriageway, tiled
+road=rg.scene;let rb=new THREE.Box3().setFromObject(road),rs=rb.getSize(new THREE.Vector3());
+if(rs.z>rs.x)road.rotation.y=Math.PI/2;const rw=new THREE.Group();rw.add(road);rw.updateMatrixWorld(true);
+rb=new THREE.Box3().setFromObject(rw);rs=rb.getSize(new THREE.Vector3());
+const r1=road.getObjectByName('Road001');let lat=r1?(()=>{const s=new THREE.Box3().setFromObject(r1).getSize(new THREE.Vector3());return Math.min(s.z,s.x)})():rs.z;
+const rsc=(lat>2&&lat<80)?12/lat:1;rw.scale.setScalar(rsc);rw.updateMatrixWorld(true);
+rb=new THREE.Box3().setFromObject(rw);roadL=rb.max.x-rb.min.x;
+rw.position.set(-(rb.min.x+rb.max.x)/2,0,-(rb.min.z+rb.max.z)/2);rw.updateMatrixWorld(true);
+const rc=new THREE.Raycaster(new THREE.Vector3(0,500,0),new THREE.Vector3(0,-1,0));const hit=rc.intersectObject(rw,true);groundY=hit.length?hit[0].point.y:rb.max.y;
+const tiles=[-1,0,1].map(()=>{const t=rw.clone();scene.add(t);return t});scene.add(rw);rw.visible=false;
+const baseY=-groundY;
+// ---------- FX
+const AN=[],SEG=36*5;for(let i=0;i<36;i++){const r=(a)=>{const x=Math.sin(i*127.1+a*311.7)*43758.5453;return x-Math.floor(x)};AN.push({y:.45+r(1)*1.5,z:(r(2)-.5)*2.4,ph:r(3)*9})}
+const airG=new THREE.BufferGeometry();airG.setAttribute('position',new THREE.BufferAttribute(new Float32Array(SEG*6),3));
+const air=new THREE.LineSegments(airG,new THREE.LineBasicMaterial({color:0x9fd8ff,transparent:true,opacity:.7}));air.frustumCulled=false;carRoot.add(air);
+const mkArrow=c=>{const a=new THREE.ArrowHelper(new THREE.Vector3(-1,0,0),new THREE.Vector3(),1,c,.25,.14);carRoot.add(a);return a};
+const dragA=mkArrow(0xff3b3b),tyreA=mkArrow(0xffd23b);
+const patch=new THREE.Mesh(new THREE.CircleGeometry(.2,32),new THREE.MeshBasicMaterial({color:0x38e0ff,transparent:true,opacity:.55,depthWrite:false}));patch.rotation.x=-Math.PI/2;patch.scale.set(1.2,1.6,1);carRoot.add(patch);
+const orbit=new OrbitControls(cam,out);orbit.enabled=false;
+// ---------- timeline model
+const T_END=70,Tstop=DIST*2.3/V0,TB1=3;
+const fT=(Tstop-TB1/2)/(T_END-TB-TB1+0)- 0;const f=(Tstop-1.5)/(T_END-TB-TB1/1+0-0+ (TB1-TB1)) ; // placeholder replaced below
+const fR=(Tstop-TB1*0.5)/((T_END-TB-TB1)+TB1*0.5); // real-time rate after ramp: Tstop = 1.5*(1+fR)... solved generally
+const rate=t=>t<TB?1:lerp(1,fR,ease(cl((t-TB)/TB1)));
+const N=Math.round(DUR*240),TAU=new Float32Array(N+1);for(let i=0,a=0;i<=N;i++){TAU[i]=a;a+=rate(i/240)/240}
+const tau=t=>{const x=cl(t,0,DUR)*240,i=Math.floor(x);return i>=N?TAU[N]:lerp(TAU[i],TAU[i+1],x-i)};
+const tau8=tau(TB);
+function veh(t){const ta=tau(t),tb=Math.max(0,ta-tau8),s=cl(tb/Tstop),v=ta<tau8?V0:V0*Math.pow(1-s,1.3)*(s>=1?0:1);
+ const d=ta<tau8?V0*ta:V0*tau8+DIST*(1-Math.pow(1-s,2.3));return{v,d,s,db:ta<tau8?0:DIST*(1-Math.pow(1-s,2.3))}}
+const wingA=t=>ease(cl((t-TB)/2.5))*0.56;const brk=t=>ease(cl((t-TB-.3)/.7))*(1-ease(cl((t-69)/1)));
+const sceneOf=t=>Math.min(9,SC.findIndex((x,i)=>t>=x&&t<SC[i+1]));
+// camera keys [t, pos(fn), target(fn)] in car frame; car-relative
+const w3=(x,y,z)=>new THREE.Vector3(x,y,z),Wp=(x,y,z)=>Wc.clone().add(w3(x,y,z));
+const sideZ=-(Math.abs(Wc.z)+1);
+const K=[[0,w3(1.5,.55,5.2),w3(-.3,.6,0)],[7,w3(-6.8,1.7,3.8),w3(-1.2,1.1,0)],[15,w3(-5.2,3.4,-.6),w3(-1.5,1.2,0)],[22.5,w3(-6,3,-1.5),w3(-1.5,1.2,0)],
+[27,Wp(.5,.15,-1.6),Wp(0,0,0)],[31,Wp(.3,.1,-1.15),Wp(0,0,0)],[37,Wp(.15,.15,-1.1),Wp(0,0,0)],[39.5,Wp(-.6,.35,-2.4),Wp(0,0,0)],
+[40,w3(.4,.22,sideZ-2.6),w3(Wc.x,.12,Wc.z)],[46,w3(-.3,.3,sideZ-3.3),w3(Wc.x,.12,Wc.z)],[47,w3(0,1.1,-9),w3(0,.7,0)],[54,w3(0,1.1,-8.5),w3(-.2,.7,0)],
+[55,w3(-9,1.6,-5),w3(0,.8,0)],[62,w3(-5,1,-6.5),w3(0,.7,0)],[63,w3(4,.9,-6.5),w3(0,.7,0)],[70,w3(5,1,-6.5),w3(0,.7,0)],[75,w3(5.5,1.2,-1.4+8),w3(0,.7,0)],[78,w3(5.2,1.5,6.2),w3(0,.7,0)]];
+function camAt(t){let i=0;while(i<K.length-2&&t>=K[i+1][0])i++;const a=K[i],b=K[i+1],u=ease(cl((t-a[0])/(b[0]-a[0])));
+ return[a[1].clone().lerp(b[1],u),a[2].clone().lerp(b[2],u)]}
+let inspect=false,tNow=0;
+// ---------- state + render
+function setState(t){const V=veh(t),sc_=sceneOf(t);
+ const tl=Math.floor(V.d/roadL);tiles.forEach((tt,i)=>{tt.visible=true;tt.position.set(rw.position.x+(tl+i-1)*roadL,baseY,rw.position.z)});
+ carRoot.position.set(V.d,baseY,0);
+ const rot=-V.d/wr;for(const k in P.piv)P.piv[k].rotation.z=rot;
+ wing.rotation.z=wingA(t);
+ const b=brk(t),h=1-Math.pow(1-cl(V.s*1.4),2)*(1-0);const hh=V.s>0?h:0;
+ discM.color.setRGB(.16+.5*hh,.17+.16*hh,.19-.1*hh);discM.emissive.setRGB(.5*hh,.12*hh,0);discM.emissiveIntensity=.5;
+ const cutOn=$('tCut').checked&&t>=22.5&&t<40;const cutA=cutOn?ease(cl((t-24.5)/1.5))*(1-ease(cl((t-38.5)/1.2))):0;
+ lfMats.forEach(m=>{m.transparent=cutA>0;m.opacity=1-.8*cutA;m.depthWrite=cutA<.05});cut.forEach(o=>o.visible=cutA>.02||$('tCut').checked&&t>=22.5&&t<40);
+ const gap=lerp(.02,.0035,b);pads[0].position.z=Wc.z+(.019+gap);pads[1].position.z=Wc.z-(.019+gap);padM.emissive.setRGB(.2+.4*hh*b,.07,0);
+ // airflow
+ const showAir=$('tAir').checked&&((t>=7&&t<23)||(t>=46&&t<54));const vr=V.v/V0;air.visible=showAir;
+ if(showAir){const p=airG.attributes.position.array;let k=0,ws=Math.sin(wingA(t));
+  for(let i=0;i<36;i++){const A=AN[i];for(let j=0;j<5;j++){for(let e=0;e<2;e++){const x=3.5-(((t*(7+9*vr)+A.ph+j*1.9+e*.8)%9.5));let y=A.y,z=A.z;
+   if(Math.abs(z)<.95&&x>-1.7&&x<1.9)y=Math.max(y,1.15+(.2*(1.9-Math.abs(x))/1.9));
+   const dx=x-(wingC.x-.2);if(y>.9&&Math.abs(z)<1.1)y+=ws*1.1*Math.exp(-dx*dx/1.6)*(dx<0?0.4:1)+(dx>0?ws*.5*Math.exp(-dx*dx/9):0);
+   p[k++]=x;p[k++]=y;p[k++]=z}}}airG.attributes.position.needsUpdate=true}
+ const vecOn=$('tVec').checked;const dl=.3+2.2*vr*vr*cl(wingA(t)/.56);
+ dragA.visible=vecOn&&t>=14&&t<54&&V.v>1;dragA.position.set(wingC.x-.2,wingC.y+1.0,wingC.z);dragA.setLength(dl,.28,.16);
+ tyreA.visible=vecOn&&((t>=39&&t<54)&&V.v>1);const fl=.3+1.4*b*(.3+.7*vr);tyreA.position.set(Wc.x+fl,.03,Wc.z);tyreA.setDirection(w3(-1,0,0));tyreA.setLength(fl,.2,.12);
+ patch.visible=t>=38&&t<54;patch.position.set(Wc.x,.012,Wc.z);
+ carRoot.updateMatrixWorld(true);
+ const[cp,ct]=inspect?[null,null]:camAt(t);if(!inspect){cam.position.copy(cp).applyMatrix4(carRoot.matrixWorld);const tw=ct.clone().applyMatrix4(carRoot.matrixWorld);cam.lookAt(tw);}
+ sun.position.set(V.d-20,40,-15);sun.target.position.set(V.d,0,0);sun.target.updateMatrixWorld();
+ return{V,sc_,h:hh,b}}
+const fmt=n=>n.toFixed(0);
+function proj(v){const w=v.clone().applyMatrix4(carRoot.matrixWorld).project(cam);return[(w.x+1)/2*out.width,(1-w.y)/2*out.height]}
+function wrap(txt,mx){const ws=txt.split(' ');let l='',ls=[];for(const w of ws){if(g.measureText(l+' '+w).width>mx&&l){ls.push(l);l=w}else l=l?l+' '+w:w}ls.push(l);return ls}
+function draw(t,S){const W_=out.width,H=out.height,k=W_/1080;g.drawImage(renderer.domElement,0,0,W_,H);
+ const V=S.V,sn=S.sc_;g.textAlign='center';
+ const txt=(s,x,y,sz,c='#fff',wt=700)=>{g.font=`${wt} ${sz*k}px system-ui,sans-serif`;g.fillStyle=c;g.fillText(s,x*k,y*k)};
+ // speed HUD
+ const kmh=V.v*3.6;g.fillStyle='rgba(0,0,0,.45)';g.fillRect(300*k,60*k,480*k,150*k);txt(fmt(kmh),540,165,100);g.textAlign='right';txt('KM/H',770,190,32,'#9fd8ff');g.textAlign='center';
+ txt(`SCENE ${sn+1}/10`,540,50,26,'#9fb0c8');if(t>=TB)txt('ILLUSTRATIVE SLOW-MOTION TIME SCALE',540,238,24,'#ffcc66');
+ // scene panels
+ const pan=(y,h)=>{g.fillStyle='rgba(0,0,0,.55)';g.fillRect(60*k,y*k,960*k,h*k)};
+ if(t>=31&&t<39){pan(1060,300);txt('KINETIC ENERGY  E = ½ m v²',540,1110,34);const e=Math.pow(V.v/V0,2);
+  g.fillStyle='#223';g.fillRect(100*k,1135*k,880*k,34*k);g.fillStyle='#4aa3ff';g.fillRect(100*k,1135*k,880*k*e,34*k);
+  txt('→ HEAT in brake discs & pads (mainly)    → AIR via drag',540,1210,28,'#ffd9a0');txt('Other losses: tyres, drivetrain…  (no exact split shown)',540,1245,24,'#9fb0c8');
+  const gr=g.createLinearGradient(100*k,0,980*k,0);gr.addColorStop(0,'#3a3d44');gr.addColorStop(.6,'#7a3b18');gr.addColorStop(1,'#c4561c');g.fillStyle=gr;g.fillRect(100*k,1285*k,880*k,22*k);
+  g.fillStyle='#fff';g.fillRect((100+880*S.h)*k-3*k,1275*k,6*k,42*k);txt('DISC TEMPERATURE — ILLUSTRATIVE, NOT MEASURED',540,1345,24,'#9fb0c8')}
+ if(t>=54&&t<62){pan(1000,330);txt('400–0 KM/H: 491 METRES',540,1075,56);txt('Bugatti-published Chiron Super Sport specification.',540,1115,28,'#9fb0c8');
+  const x0=120,x1=960,fr=V.db/DIST;g.fillStyle='#333';g.fillRect(x0*k,1190*k,(x1-x0)*k,10*k);g.fillStyle='#ff5a3c';g.fillRect(x0*k,1190*k,(x1-x0)*k*fr,10*k);
+  g.beginPath();g.arc((x0+(x1-x0)*fr)*k,1195*k,16*k,0,7);g.fill();txt('0 m',x0,1250,26);txt('491 m',x1,1250,26);txt(`${fmt(V.db)} m since brake start`,540,1300,30,'#fff')}
+ if(t>=62&&t<70){pan(1000,330);txt('0–400–0 KM/H: 41.96 SECONDS',540,1075,50);g.font=`${30*k}px system-ui`;g.fillStyle='#cfd8e6';
+  ['Full run: accelerating to 400 km/h AND braking to zero.','This is NOT the braking-only time.'].forEach((s,i)=>txt(s,540,1140+i*44,30,'#cfd8e6',500))}
+ // labels
+ const lab=(s,v,c='#7fe3ff')=>{const[x,y]=proj(v);g.fillStyle='rgba(0,0,0,.65)';g.font=`700 ${28*k}px system-ui`;const w=g.measureText(s).width+24*k;g.fillRect(x-w/2,y-22*k,w,40*k);g.strokeStyle=c;g.strokeRect(x-w/2,y-22*k,w,40*k);g.fillStyle=c;g.fillText(s,x,y+8*k)};
+ if(t>=7.8&&t<15)lab('ACTIVE REAR WING → AIRBRAKE',wingC.clone().add(w3(0,.5,0)),'#ffd23b');
+ if(t>=15&&t<23)lab('DRAG ← opposes motion',w3(wingC.x-.2-(.5),wingC.y+1.5,wingC.z),'#ff6b6b');
+ if(t>=24&&t<31){lab('TYRE + WHEEL',Wp(0,.5,-.2));lab('DISC (rotates, explanatory model)',Wp(0,-.1,0),'#ffd23b');lab('CALIPER (fixed)',Wp(0,.45,.1).add(w3(0,.25,0)),'#7fe3ff');lab('PADS clamp disc',Wp(.1,.18,0),'#ff9f4a')}
+ if(t>=39&&t<46){lab('CONTACT PATCH',w3(Wc.x,0,Wc.z),'#38e0ff');lab('Braking force → road',w3(Wc.x-.7,.2,Wc.z),'#ffd23b');txt('DISC + PADS make torque · TYRES pass force to the road',540,980,28,'#fff',600)}
+ if(t>=46&&t<54){const u=t-46;if(u<2.6)lab('1  AIRBRAKE',wingC.clone().add(w3(0,.5,0)),'#ffd23b');else if(u<5.2)lab('2  CARBON-CERAMIC BRAKES',Wc.clone().add(w3(0,.55,0)),'#ff9f4a');else lab('3  TYRE–ROAD CONTACT',w3(Wc.x,0,Wc.z),'#38e0ff');txt('ABS keeps wheels rolling, not locked',540,980,28,'#cfd8e6',500)}
+ if(t>=70){const u=cl((t-70)/1.5);g.globalAlpha=u;['REAR-WING AIRBRAKE','CARBON-CERAMIC BRAKES','TYRE–ROAD CONTACT'].forEach((s,i)=>{g.fillStyle='rgba(0,0,0,.6)';g.fillRect(200*k,1000*k+i*70*k,680*k,56*k);txt(s,540,1040+i*70,32,['#ffd23b','#ff9f4a','#38e0ff'][i])});
+  txt('400 KM/H. THREE BRAKING SYSTEMS. ONE CONTROLLED STOP.',540,1240,30,'#fff');g.globalAlpha=1}
+ // caption
+ const n=NAR[sn],ss=n.match(/[^.?]+[.?]?/g).map(s=>s.trim()).filter(Boolean),tot=ss.reduce((a,s)=>a+s.length,0),u=(t-SC[sn])/(SC[sn+1]-SC[sn])*1.0;let acc=0,cur=ss[ss.length-1];
+ for(const s of ss){acc+=s.length/tot;if(u<acc*0.97){cur=s;break}}
+ g.font=`700 ${46*k}px system-ui,sans-serif`;const ls=wrap(cur,900*k),bh=ls.length*60*k+30*k,by=H-110*k-bh;g.fillStyle='rgba(0,0,0,.62)';g.fillRect(60*k,by,960*k,bh);g.fillStyle='#fff';ls.forEach((l,i)=>g.fillText(l,W_/2,by+58*k+i*60*k));
+}
+function frame(t){const S=setState(t);renderer.render(scene,cam);draw(t,S)}
+// ---------- audio (shared by live + offline)
+const seedNoise=ctx=>{const b=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate),d=b.getChannelData(0);let s=12345;for(let i=0;i<d.length;i++){s=(s*1664525+1013904223)>>>0;d[i]=s/2147483648-1}return b};
+const curve=(fn,t0,t1,n=240)=>Float32Array.from({length:n},(_,i)=>fn(lerp(t0,t1,i/(n-1))));
+function buildAudio(ctx,dest,t0){const nodes=[],D=DUR-t0;if(D<=0.05)return nodes;const now=ctx.currentTime+.05;
+ const G=(fn)=>{const g_=ctx.createGain();g_.gain.setValueAtTime(0,now);g_.gain.setValueCurveAtTime(curve(fn,t0,DUR),now,D);return g_};
+ const sp=t=>veh(t).v/V0;
+ if(engBuf){const ED=engBuf.duration;const eg=t=>{const e=.3+.7*Math.pow(sp(t),.7);return e*(1-.85*ease(cl((t-75.5)/2.5)))*ease(cl(t/.4))};
+  const mk=(off,when,gfn)=>{const s=ctx.createBufferSource();s.buffer=engBuf;const gg=G(t=>eg(t)*gfn(t));s.connect(gg).connect(dest);s.start(now+when,off);nodes.push(s)};
+  const cf=ED-3; // main track until ED, second pass (mid-section of same recording) crossfades in for the tail
+  if(t0<ED)mk(Math.min(t0,ED-.01),0,t=>1-ease(cl((t-cf)/3)));
+  if(DUR>cf)mk(Math.max(25,0)+Math.max(0,t0-cf),Math.max(0,cf-t0),t=>ease(cl((t-cf)/3)))}
+ const nb=seedNoise(ctx);const nz=(fq,q,fn)=>{const s=ctx.createBufferSource();s.buffer=nb;s.loop=true;const f_=ctx.createBiquadFilter();f_.type='bandpass';f_.frequency.value=fq;f_.Q.value=q;s.connect(f_).connect(G(fn)).connect(dest);s.start(now);nodes.push(s)};
+ nz(700,.6,t=>.22*Math.pow(sp(t),1.6));nz(120,.8,t=>.1*Math.pow(sp(t),1.2));
+ nz(2600,2,t=>{const u=(t-TB)/2.5;return u>0&&u<1?.07*Math.sin(u*Math.PI):0});
+ nz(3200,1.2,t=>.06*brk(t)*Math.min(1,sp(t)*3)*(sp(t)>.02?1:0));nz(1500,1,t=>.05*brk(t)*Math.min(1,sp(t)*2));
+ const comp=1;return nodes}
+let master,liveNodes=[],playing=false,tAt=0,t0wall=0;
+function audioStop(){liveNodes.forEach(n=>{try{n.stop()}catch(e){}});liveNodes=[]}
+async function audioStart(t){audioStop();if(!$('tSnd').checked||!actx)return;await actx.resume();if(!master){master=actx.createGain();const c=actx.createDynamicsCompressor();master.connect(c).connect(actx.destination)}master.gain.value=+$('vol').value;liveNodes=buildAudio(actx,master,t)}
+// ---------- controls
+SC.slice(0,10).forEach((s,i)=>{const b=document.createElement('button');b.textContent=i+1;b.onclick=()=>seek(s);$('scn').appendChild(b)});
+function seek(t){tNow=cl(t,0,DUR-1/FPS);t0wall=performance.now()-tNow*1000;if(playing)audioStart(tNow);}
+function setPlay(p){playing=p;$('play').textContent=p?'⏸ Pause':'▶ Play';if(p){if(tNow>=DUR-.05)tNow=0;t0wall=performance.now()-tNow*1000;audioStart(tNow)}else audioStop()}
+$('play').onclick=()=>setPlay(!playing);$('restart').onclick=()=>{seek(0);setPlay(true)};
+$('scrub').oninput=e=>seek(+e.target.value);
+$('tSnd').onchange=()=>playing&&($('tSnd').checked?audioStart(tNow):audioStop());$('vol').oninput=()=>master&&(master.gain.value=+$('vol').value);
+$('insp').onclick=e=>{inspect=!inspect;e.target.classList.toggle('on',inspect);orbit.enabled=inspect;if(inspect){cam.position.set(-6+carRoot.position.x,2.5,-6);orbit.target.set(carRoot.position.x,.7,0)}};
+$('rcam').onclick=()=>{inspect=false;orbit.enabled=false;$('insp').classList.remove('on')};
+function size(w,h){renderer.setPixelRatio(1);renderer.setSize(w,h,false);out.width=w;out.height=h;cam.aspect=w/h;cam.updateProjectionMatrix()}
+$('q').onchange=()=>size(+$('q').value,+$('q').value*16/9);size(540,960);
+function loop(){if(!exporting){if(playing){tNow=(performance.now()-t0wall)/1000;if(tNow>=DUR){tNow=DUR-1/FPS;setPlay(false)}}
+ if(inspect)orbit.update();frame(tNow);$('scrub').value=tNow;$('tm').textContent=tNow.toFixed(1)}requestAnimationFrame(loop)}
+$('load').remove();loop();
+// ---------- offline export (frame-by-frame, WebCodecs via Mediabunny, AAC audio muxed)
+let exporting=false,cancelFlag=false;const msg=s=>$('msg').textContent=s;
+$('esz').onchange=()=>$('exp').textContent=$('esz').value==='1080'?'EXPORT FULL HD MP4 — 1080 × 1920':'EXPORT MP4 — 720 × 1280';
+$('cancel').onclick=()=>cancelFlag=true;
+$('exp').onclick=async()=>{if(exporting)return;exporting=true;cancelFlag=false;setPlay(false);$('exp').disabled=true;$('cancel').disabled=false;
+ const W_=+$('esz').value,H_=W_*16/9,prevW=out.width,prevT=tNow,nF=Math.round(DUR*FPS);let out_=null;
+ try{msg('1/9 Preparing export renderer…');const MB=await import('mediabunny');
+  if(!engBuf)throw new Error('Engine audio not decoded — refusing to export with a substituted sound.');
+  msg('2/9 Mixing audio offline (OfflineAudioContext)…');
+  const oc=new OfflineAudioContext(2,48000*DUR,48000);const om=oc.createGain();om.gain.value=.9;const cp=oc.createDynamicsCompressor();om.connect(cp).connect(oc.destination);
+  const eb=engBuf;const saved=engBuf;buildAudio(oc,om,0);const abuf=await oc.startRendering();
+  size(W_,H_);let fmtName='mp4';
+  const tryFmt=async(webm)=>{const o=new MB.Output({format:webm?new MB.WebMOutputFormat():new MB.Mp4OutputFormat(),target:new MB.BufferTarget()});
+   const vs=new MB.CanvasSource(out,{codec:webm?'vp9':'avc',bitrate:W_>=1080?16e6:8e6});o.addVideoTrack(vs,{frameRate:FPS});
+   const as=new MB.AudioBufferSource({codec:webm?'opus':'aac',bitrate:192e3});o.addAudioTrack(as);await o.start();return{o,vs,as}};
+  try{out_=await tryFmt(false)}catch(e){fmtName='webm';msg('MP4/H.264+AAC unsupported here ('+e.message+') — trying WebM VP9+Opus…');out_=await tryFmt(true)}
+  await out_.as.add(abuf);out_.as.close();
+  for(let n=0;n<nF;n++){if(cancelFlag)throw new Error('cancelled');frame(n/FPS);await out_.vs.add(n/FPS,1/FPS);
+   if(n%3==0){$('pr').value=n/nF;msg(`3/9 Rendering + encoding frame ${n+1}/${nF} (${(n/nF*100).toFixed(0)}%)`);await new Promise(r=>setTimeout(r))}}
+  out_.vs.close();msg('Muxing / finalizing…');await out_.o.finalize();const buf=out_.o.target.buffer;if(!buf||!buf.byteLength)throw new Error('empty output');
+  const blob=new Blob([buf],{type:fmtName==='mp4'?'video/mp4':'video/webm'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`chiron-400kmh-brake-${W_}x${H_}.${fmtName}`;a.click();
+  $('pr').value=1;msg(`Done: ${a.download} · ${(blob.size/1048576).toFixed(1)} MB · ${DUR}s · ${nF} frames @${FPS} fps · audio AAC/Opus track muxed.`)
+ }catch(e){msg(e.message==='cancelled'?'Export cancelled — no file produced.':'Export failed: '+e.message);try{await out_?.o.cancel?.()}catch(_){}}
+ finally{exporting=false;$('exp').disabled=false;$('cancel').disabled=true;size(+$('q').value,+$('q').value*16/9);tNow=prevT}};
+window.__dbg={frame,veh,seek};
+</script></body></html>
